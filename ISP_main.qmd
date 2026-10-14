@@ -1,0 +1,53 @@
+---
+title: "ISP_main_QMD"
+format: html
+editor: visual
+---
+
+### Set Up
+
+```{r}
+### load packages
+library(fs)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(vegan)
+```
+
+```{r}
+### read in data
+
+#dropbox file path set up
+dropbox_path <- path_home("Dropbox", "Stella", "data") 
+
+# chemicals
+chemicals <- read.csv(dropbox_path/"catch.csv") 
+
+# bugs
+Hengill <- read_excel(dropbox_path/"Hengill Fall 2013.xlsx")
+
+
+bugs <- read.csv2(dropbox_path/"inverts.csv") %>%
+  mutate(year = as.factor(year),
+         stream = as.factor(stream))
+```
+
+# Data Cleaning
+```{r}
+chemicals_clean <- chemicals %>%
+  filter(Stream %in% c("is1", "is2", "is3", "is4", "is5", "is6", "is7"))
+```
+
+# Preliminary Analysis
+```{r}
+chemicals_clean %>%
+  group_by(Stream, Depth) %>%
+  summarise(mean_SRP = mean(SRP))
+
+chemicals_clean %>%
+  ggplot(aes(y = SRP, x = Stream, color = Depth)) +
+  geom_boxplot()
+```
+
+goal: data frame with site, species 1, species 2, species 3, etc. temp, disolved O, etc

@@ -1,0 +1,131 @@
+---
+title: "Permanova Training"
+author: "Stellaria Otstot"
+date: "2026-10-13"
+output: html_document
+---
+
+# Permanova Training
+
+### Set Up
+
+```{r}
+# load packages
+library(dplyr)
+library(tidyr)
+library(vegan)
+library(purrr)
+library(tibble)
+```
+
+### Data Frame Building/Cleaning
+
+```{r}
+# Preliminary
+df <- bugs
+id_cols <- c("stream","station","season","year","depth") #define id cols
+species_cols <- setdiff(names(df), id_cols) #define species cols
+
+# Building Data Frame
+df <- df %>%
+  mutate(sample_id = paste(stream, station, season, year, depth, sep = "_")) %>%
+  mutate(across(all_of(species_cols), ~ as.numeric(as.character(.x)))) %>%  # make all species data numeric
+  mutate(across(all_of(species_cols), ~ coalesce(.x, 0))) %>% # transform NAs to 0s
+  filter(if_any(all_of(species_cols), ~ .x != 0)) # removes rows that have zero in every species column
+
+# Building Matrix
+comm <- df %>%
+  select(all_of(species_cols)) %>%
+  select(where(~ sum(. != 0) > 0)) %>% #drop all zero columns (species not in analysis)
+  as.matrix()
+
+# Set Rownames and Update Species_cols
+rownames(comm) <- df$sample_id
+species_cols <- colnames(comm)
+```
+
+### Model Building
+
+```{r}
+#Hellinger transform (recommended before Bray)
+comm_hel <- decostand(comm, method = "hellinger")
+
+# Bray-Curtis distance
+d <- vegdist(comm_hel, method = "bray")
+
+# single-factor PERMANOVA (adonis2)
+set.seed(2026)
+mod <- adonis2(comm_hel ~ stream, data = df, permutations = 9999, method = "bray")
+print(mod)
+```
+
+### Homogeneity Check
+
+```{r}
+#set group and bd
+grp <- df$stream
+bd <- betadisper(d, grp)
+
+# dispersion check (look for non-significant p value)
+permutest(bd, permutations = 9999)
+
+#box plot to visualize dispersion of data
+boxplot(bd, main = "Beta-dispersion by group")
+
+  #check - visualizations
+tapply(bd$distances, grp, mean) # mean distance to centroid per group
+table(grp) # sample sizes per group
+```
+
+### Pairwise Comparisons
+
+```{r}
+# pairwise wilcox test, shows which groups have significantly different dispersion (i.e. those with significant p values)
+pw_disp <- pairwise.wilcox.test(bd$distances, grp, p.adjust.method = "BH")
+pw_disp
+  #see apendix section A for tidy table with true/false significance
+
+# NMDS or PCoA to visualize centroids and group spread
+set.seed(42)
+nmds <- metaMDS(comm_hel, distance = "bray", k = 2)
+plot(nmds, type = "n")
+points(nmds, display = "sites", col = as.numeric(grp), pch = 16)
+ordiellipse(nmds, grp, kind = "se", col = 1:length(levels(grp)))
+# or ordihull(nmds, grp) to draw hulls
+```
+
+Because several streams' data are dispersed differently (Pairwise tests of dispersion (Wilcoxon with BH correction) have significant p values), the significant p value from permanova may be a reflection of this dispersion rather than true significance between group centroid differences. Because betadisper was significant overall, the differences in community composition detected by PERMANOVA may be driven in part by unequal dispersion among streams.
+
+### Notes
+
+```{r}
+decostand(comm, "hellinger") #converts each sample’s raw counts into square‑rooted relative abundances: 
+                             #h_ij = sqrt( y_ij / sum_j y_ij ).
+```
+
+Why: it (1) makes data comparable across samples by removing different total sample sizes, (2) downweights very abundant taxa so they don’t dominate the distance, and (3) keeps zeros as zeros (no imputation). It’s a standard, robust transform for community abundance data before many multivariate techniques (ordination, clustering, PERMANOVA).
+
+*How does PERMANOVA test differences using permutations?* 
+Classical MANOVA assumes multivariate normality and equal covariance matrices. Real ecological data violate both. PERMANOVA replaces those assumptions with a single, simple idea: if your grouping does not matter, you should be able to scramble group labels and still get the same statistic on average. The pseudo-F is the same ratio you would compute in a one-way ANOVA, but applied to sums of squared distances rather than squared deviations.
+
+*How do you choose the right distance metric for PERMANOVA?* 
+PERMANOVA is a test on a distance matrix, not on the raw data, so the metric you pick is part of the hypothesis. Three choices cover most cases: Bray-Curtis for species abundance counts (the ecology default, ignores joint absences), Jaccard for presence-absence data (set overlap), and Euclidean for continuous traits or transformed compositions. The diagram below maps data type to metric.
+
+Always plot the ordination before reporting a PERMANOVA p-value. If the groups overlap completely on NMDS but adonis2 returns p = 0.04, you may be detecting a tiny centroid shift that no biologist will care about. The plot keeps the test honest.
+
+# Apendix
+
+#### A
+
+```{r}
+# produce a tidy table of pairwise dispersion p-values
+p_mat <- pw_disp$p.value
+pairs_idx <- which(!is.na(p_mat), arr.ind = TRUE)
+pairwise_df <- data.frame(
+  group1 = colnames(p_mat)[pairs_idx[,2]],
+  group2 = rownames(p_mat)[pairs_idx[,1]],
+  p = p_mat[!is.na(p_mat)]
+)
+pairwise_df$significant <- pairwise_df$p < 0.05
+pairwise_df[order(pairwise_df$p), ]
+```
