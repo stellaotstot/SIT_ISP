@@ -1,0 +1,304 @@
+---
+title: "Diversity Indicies And Hill Numbers"
+author: "Stellaria Otstot"
+date: "2026-10-16"
+output: html_document
+---
+
+Purpose: This rmd is dedicated towards species richness analysis
+- Species richness, shannon, and simpson diversity metrics for each stream/depth combination
+- Supporting box plots
+- Mixed Effects models 
+    - test whether richness varies with temperature nonlinearly
+    - test whether that temperature relationship differs by depth
+    - visualize fitted temperature richness curves with uncertainty
+
+
+Necessary Environment Objects
+- bugs: ISP main markdown
+
+Environment Objects Created
+- diversity_df
+- diversity_long
+- richness_long
+
+# Set Up
+```{r}
+library(vegan)
+library(hillR)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(lme4)
+library(lmerTest) 
+library(emmeans)
+```
+
+
+```{r}
+# Calculate diversity for each station-depth community profile
+diversity_df <- bugs %>%
+  select(sample_id, stream, depth, tempDepth) %>%
+  mutate(
+    richness = vegan::specnumber(comm),
+    shannon = vegan::diversity(comm, index = "shannon"),
+    simpson = vegan::diversity(comm, index = "simpson")
+  )
+
+# Put the metrics into a format convenient for plotting
+diversity_long <- diversity_df %>%
+  pivot_longer(
+    cols = c(richness, shannon, simpson),
+    names_to = "metric",
+    values_to = "diversity_value"
+  )
+
+depth_levels <- levels(droplevels(bugs$depth))
+
+metric_labels <- c(
+  richness = "Species Richness",
+  shannon = "Shannon Diversity",
+  simpson = "Simpson Diversity (1 - D)"
+)
+
+# Create one plot per metric per depth
+diversity_plots <- lapply(names(metric_labels), function(metric_name) {
+  plots_at_depth <- lapply(depth_levels, function(d) {
+    plot_data <- diversity_long %>%
+      filter(
+        metric == metric_name,
+        as.character(depth) == as.character(d)
+      )
+
+    ggplot(
+      plot_data,
+      aes(x = stream, y = diversity_value, fill = stream)
+      ) +
+      geom_boxplot(outlier.shape = NA, alpha = 0.5) +
+      geom_jitter(width = 0.15, alpha = 0.7, size = 2) +
+      labs(
+        title = paste(
+          metric_labels[[metric_name]],
+          "- Depth:",
+          depth_labels[[as.character(d)]]
+        ),
+        x = "Stream",
+       y = metric_labels[[metric_name]]
+          ) +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)
+            )
+  })
+
+  names(plots_at_depth) <- as.character(depth_levels)
+  plots_at_depth
+})
+
+names(diversity_plots) <- names(metric_labels)
+
+diversity_plots$richness[["surber"]]
+diversity_plots$richness[["25"]]
+diversity_plots$richness[["50"]]
+
+diversity_plots$shannon[["surber"]]
+diversity_plots$shannon[["25"]]
+diversity_plots$shannon[["50"]]
+
+diversity_plots$simpson[["surber"]]
+diversity_plots$simpson[["25"]]
+diversity_plots$simpson[["50"]]
+```
+
+```{r}
+diversity_plots_2 <- lapply(names(metric_labels), function(metric_name) {
+  plots_at_depth <- lapply(depth_levels, function(d) {
+    plot_data <- diversity_long %>%
+      filter(
+        metric == metric_name,
+        as.character(depth) == as.character(d)
+      )
+
+    ggplot(
+      plot_data,
+      aes(x = stream, y = diversity_value, fill = stream)
+    ) +
+      geom_boxplot(outlier.shape = NA, alpha = 0.5) +
+      geom_jitter(width = 0.15, alpha = 0.7, size = 2) +
+      labs(
+        title = depth_labels[[as.character(d)]],
+        x = "Stream",
+        y = metric_labels[[metric_name]]
+      ) +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        aspect.ratio = 0.8)
+  })
+
+  wrap_plots(plots_at_depth, ncol = 3) +
+    plot_annotation(title = metric_labels[[metric_name]])
+})
+
+names(diversity_plots_2) <- names(metric_labels)
+
+# Display each metric's combined three-panel plot
+diversity_plots_2$richness
+diversity_plots_2$shannon
+diversity_plots_2$simpson
+```
+```{r}
+stream_levels <- c("is-11", "is-10", "is-7", "is-1", "is-5", "is-6", "is-8")
+stream_spacing <- 1.4  # Increase this for more space between streams
+
+diversity_plots_3 <- lapply(names(metric_labels), function(metric_name) {
+  plot_data <- diversity_long %>%
+    filter(metric == metric_name) %>%
+    mutate(
+      stream = factor(stream, levels = stream_levels),
+      stream_x = as.numeric(stream) * stream_spacing,
+      depth = factor(
+        as.character(depth),
+        levels = c("surber", "25", "50")
+      )
+    )
+
+  ggplot(
+    plot_data,
+    aes(x = stream_x, y = diversity_value, fill = depth)
+  ) +
+    geom_boxplot(
+      aes(group = interaction(stream, depth)),
+      position = position_dodge(width = 0.8),
+      width = 0.7,
+      outlier.shape = NA,
+      alpha = 0.7
+    ) +
+    geom_point(
+      position = position_jitterdodge(
+        jitter.width = 0.12,
+        dodge.width = 0.8
+      ),
+      alpha = 0.7,
+      size = 2
+    ) +
+    scale_x_continuous(
+      breaks = seq_along(stream_levels) * stream_spacing,
+      labels = stream_levels
+    ) +
+    scale_fill_discrete(
+      name = "Depth",
+      labels = c(
+        "surber" = "Surface (0 cm)",
+        "25" = "25 cm",
+        "50" = "50 cm"
+      )
+    ) +
+    labs(
+      title = paste(metric_labels[[metric_name]], "Across Stream and Depth"),
+      x = "Stream",
+      y = metric_labels[[metric_name]]
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(size = 16),
+      aspect.ratio = 0.5,
+      plot.title = element_text(size = 18),
+      axis.title = element_text(size = 14),
+      legend.title = element_text(size = 13),
+      legend.text = element_text(size = 11)
+    )
+})
+
+names(diversity_plots_3) <- names(metric_labels)
+
+diversity_plots_3$richness
+diversity_plots_3$shannon
+diversity_plots_3$simpson
+```
+
+### New method
+
+```{r}
+# Build Data Frame
+richness_model_dat <- richness_long %>%
+  group_by(stream, depth) %>%
+  mutate(temp_pair = mean(tempDepth, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(
+    temp_c = temp_pair - mean(temp_pair, na.rm = TRUE)
+  )
+
+# Fit Models
+### linear
+m_int <- lmer(
+  richness ~ temp_c * depth + (1 | stream) + (1 | stream:depth),
+  data = richness_model_dat,
+  REML = FALSE
+)
+
+### quadratic
+m_quad <- lmer(
+  richness ~ temp_c * depth + I(temp_c^2) +
+    (1 | stream) + (1 | stream:depth), # 1 means intercepts can vary but not slopes 
+  data = richness_model_dat,           # (1 | stream) streams have their own baseline richness
+  REML = FALSE                        # (1 | stream:depth) depths within streams have their own 
+)                                          # baseline too 
+summary(m_quad)
+
+### quadratic with no interaction
+m_quad_no_interaction <- lmer(
+  richness ~ temp_c + depth + I(temp_c^2) +
+    (1 | stream) + (1 | stream:depth),
+  data = richness_model_dat,
+  REML = FALSE
+)
+
+# Compare Models
+anova(m_int, m_quad)
+
+anova(m_quad_no_interaction, m_quad)
+```
+
+### Visualizations
+
+```{r}
+# Predict across the observed centered-temperature range at each depth
+pred <- emmeans(
+  m_quad,
+  ~ depth | temp_c,
+  at = list(
+    temp_c = seq(
+      min(richness_model_dat$temp_c, na.rm = TRUE),
+      max(richness_model_dat$temp_c, na.rm = TRUE),
+      length.out = 100))) %>%
+  as.data.frame()
+
+# Convert centered temperature back to the original temperature scale
+temp_center <- mean(richness_model_dat$temp_pair, na.rm = TRUE)
+pred$temp_pair <- pred$temp_c + temp_center
+
+# Plot 
+ggplot(pred, aes(x = temp_pair, y = emmean, color = depth, fill = depth)) +
+  geom_ribbon(
+    aes(ymin = lower.CL, ymax = upper.CL),
+    alpha = 0.18,
+    color = NA
+  ) +
+  geom_line(linewidth = 1) +
+  labs(
+    x = "Temperature",
+    y = "Predicted mean species richness",
+    color = "Depth",
+    fill = "Depth",
+    title = "Predicted Mean Species Richness Across Observed Temperatures by Depth"
+  ) +
+  theme_minimal()
+```
+
+
+

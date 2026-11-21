@@ -1,0 +1,326 @@
+---
+title: "CCA Analysis"
+author: "Stellaria Otstot"
+date: "2026-11-12"
+output: html_document
+---
+
+Purpose: This rmd is dedicated towards the CCA analysis and supporting materials
+- Run CCA comparing community composition and all env vars
+- Run CCA comparing community comppostion across depth
+- Supporting CCA plots
+
+Necessary Environment Objects
+- bugs: ISP main markdown
+
+Environment Objects Created
+- bugs_agg
+- cca_dat
+- comm2
+
+### Set Up
+
+```{r}
+library(vegan)
+library(permute)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+```
+
+### Data Frame Building
+
+```{r}
+#define env cols
+env_cols <- c("tempDepth", "doDepth", "conductivityDepth", "pHDepth")
+
+# build data frame
+bugs_agg <- bugs %>%
+  group_by(stream, depth) %>%
+  summarise(
+    across(all_of(c(species_cols, env_cols)), ~ mean(.x, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  mutate(depth = factor(depth))
+
+#env data separation
+cca_dat <- bugs_agg %>%
+  select(stream, depth, tempDepth, doDepth, conductivityDepth, pHDepth)
+
+sample_labels <- paste(
+  as.character(cca_dat$stream),
+  as.character(cca_dat$depth),
+  sep = "-"
+)
+
+#species data separation
+comm2 <- bugs_agg %>%
+  select(all_of(species_cols)) %>%
+  as.data.frame()
+
+rownames(comm2) <- sample_labels
+```
+
+### Model Building
+
+*Q1: Does community composition differ among depths within streams?*
+
+```{r}
+cca_depth <- vegan::cca(
+  comm2 ~ depth + Condition(stream),
+  data = cca_dat
+)
+
+depth_perm <- permute::how(
+  nperm = 4999,
+  blocks = cca_dat$stream
+)
+
+anova(cca_depth, permutations = depth_perm)
+```
+significant difference in community composition across depths after accounting for stream
+
+
+*Q2: Is community composition associated with temperature differences among streams*
+```{r}
+cca_env <- vegan::cca(
+  comm2 ~ tempDepth + doDepth + conductivityDepth + pHDepth +
+    Condition(depth),
+  data = cca_dat
+)
+
+stream_perm <- permute::how(
+  nperm = 4999,
+  within = permute::Within(type = "none"),
+  plots = permute::Plots(strata = cca_dat$stream, type = "free")
+)
+
+# Overall test of the environmental predictors
+anova(
+  cca_env,
+  permutations = stream_perm
+)
+
+# Test each predictor after accounting for the others
+anova(
+  cca_env,
+  by = "margin",
+  permutations = stream_perm
+)
+```
+*Q3: How are individual taxa abundances related to temp*
+```{r}
+library(glmmTMB)
+
+comm <- as.data.frame(comm2)
+dat <- cca_dat
+
+stopifnot(nrow(comm) == nrow(dat))
+
+# Fit a negative-binomial model for each species.
+# The stream random intercept accounts for samples grouped within streams.
+test_one_species <- function(sp) {
+  d <- dat
+  d$abundance <- comm[[sp]]
+
+  full <- glmmTMB(
+    abundance ~ tempDepth + depth + (1 | stream),
+    family = nbinom2,
+    data = d
+  )
+
+  reduced <- update(full, . ~ . - tempDepth)
+
+  # Likelihood-ratio test of whether adding temperature improves fit
+  test <- anova(reduced, full)
+  p <- test$`Pr(>Chisq)`[2]
+
+  # Temperature effect as a multiplicative change in expected abundance
+ coef_tab <- summary(full)$coefficients$cond
+beta <- coef_tab["tempDepth", "Estimate"]
+se <- coef_tab["tempDepth", "Std. Error"]
+
+# 95% Wald confidence interval on the log scale, then exponentiate
+ci <- beta + c(-1, 1) * qnorm(0.975) * se
+
+data.frame(
+  species = sp,
+  rate_ratio = exp(beta),
+  conf_low = exp(ci[1]),
+  conf_high = exp(ci[2]),
+  p_value = p
+)
+}
+
+results <- do.call(
+  rbind,
+  lapply(names(comm), test_one_species)
+)
+
+# Adjust for testing multiple species
+results$p_adjusted <- p.adjust(results$p_value, method = "BH")
+results[order(results$p_adjusted), ]
+```
+
+
+
+### Plots
+
+*Q1*
+```{r}
+# Get species and depth-centroid scores
+species_scores <- vegan::scores(
+  cca_depth, display = "species", choices = 1:2, scaling = 2
+)
+depth_scores <- vegan::scores(
+  cca_depth, display = "cn", choices = 1:2, scaling = 2
+)
+
+# Set up the plot
+plot(
+  cca_depth,
+  scaling = 2,
+  display = c("species", "cn"),
+  type = "n",
+  main = "CCA of Community Composition by Depth"
+)
+
+# Add species names
+text(
+  species_scores,
+  labels = rownames(species_scores),
+  cex = 0.8
+)
+
+# Add and label depth centroids
+points(depth_scores[, 1:2], pch = 21, bg = "lightblue")
+text(
+  depth_scores[, 1:2],
+  labels = rownames(depth_scores),
+  pos = 3,
+  cex = 0.9,
+  col = "blue"
+)
+```
+
+
+*Q2*
+
+```{r}
+# Set up the plot area for species and environmental-variable scores
+plot(
+  cca_env,
+  scaling = 2,
+  display = c("species", "bp"),
+  type = "n",
+  main = "CCA of Community Composition and Environmental Variables"
+)
+
+species_scores <- vegan::scores(
+  cca_env, display = "species", choices = 1:2, scaling = 2
+)
+env_scores <- vegan::scores(
+  cca_env, display = "bp", choices = 1:2, scaling = 2
+)
+
+# Add species names
+text(species_scores, labels = rownames(species_scores), cex = 0.8)
+
+# Fit arrows to the plot and label them with display names
+arrow_mult <- vegan::ordiArrowMul(env_scores)
+arrows(
+  0, 0,
+  env_scores[, 1] * arrow_mult,
+  env_scores[, 2] * arrow_mult,
+  length = 0.08,
+  col = "blue"
+)
+
+env_labels <- c(
+  tempDepth = "Temperature",
+  doDepth = "Dissolved Oxygen",
+  pHDepth = "pH",
+  conductivityDepth = "Conductivity"
+)
+labels <- env_labels[rownames(env_scores)]
+labels[is.na(labels)] <- rownames(env_scores)[is.na(labels)]
+
+text(
+  env_scores[, 1] * arrow_mult,
+  env_scores[, 2] * arrow_mult,
+  labels = labels,
+  col = "blue",
+  pos = 3,
+  cex = 0.9
+)
+```
+
+
+## Appendix
+
+### Depth Separation
+
+```{r}
+# 25
+cca_dat_25 <- bugs_agg %>%
+  filter(depth == "25") %>%
+  select(stream, tempDepth, doDepth, conductivityDepth, pHDepth)
+
+comm2_25 <- bugs_agg %>%
+  filter(depth == "25") %>%
+  select(all_of(species_cols)) %>%
+  as.data.frame()
+
+cca_mod_25 <- cca(
+  comm2_25 ~ tempDepth + doDepth + conductivityDepth + pHDepth,
+  data = cca_dat_25)
+
+
+# 50
+cca_dat_50 <- bugs_agg %>%
+  filter(depth == "50") %>%
+  select(stream, tempDepth, doDepth, conductivityDepth, pHDepth)
+
+comm2_50 <- bugs_agg %>%
+  filter(depth == "50") %>%
+  select(all_of(species_cols)) %>%
+  as.data.frame()
+
+cca_mod_50 <- cca(
+  comm2_50 ~ tempDepth + doDepth + conductivityDepth + pHDepth,
+  data = cca_dat_50)
+
+
+# surber
+cca_dat_surber <- bugs_agg %>%
+  filter(depth == "surber") %>%
+  select(stream, tempDepth, doDepth, conductivityDepth, pHDepth)
+
+comm2_surber <- bugs_agg %>%
+  filter(depth == "surber") %>%
+  select(all_of(species_cols)) %>%
+  as.data.frame()
+
+cca_mod_surber <- cca(
+  comm2_surber ~ tempDepth + doDepth + conductivityDepth + pHDepth,
+  data = cca_dat_surber)
+```
+
+#### Model Output
+```{r}
+summary(cca_mod_25)
+summary(cca_mod_50)
+summary(cca_mod_surber)
+
+set.seed(2026)
+
+plot(cca_mod_25, scaling = 2)
+plot(cca_mod_50, scaling = 2)
+plot(cca_mod_surber, scaling = 2)
+
+anova(cca_mod_25, permutations = 9999)
+anova(cca_mod_25, by = "margin", permutations = 9999)
+```
+```
+
+

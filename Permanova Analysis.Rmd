@@ -1,0 +1,442 @@
+---
+title: "Permanova Analysis"
+author: "Stellaria Otstot"
+date: "2026-10-13"
+output: html_document
+---
+
+Purpose: PERMANOVA analysis and supporting materials
+- permanova analysis for each depth
+- betadisper/permutest() dispersion test for each depth
+- pairwise comparisons for each stream combination at each depth
+- p value matrix visualization
+- bray-curtis heatmap visualization
+
+Necessary Environment Objects
+- bugs: ISP main markdown
+
+Environment Objects Created
+- many (none relevant for future analysis)
+
+### Set Up
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(vegan)
+library(purrr)
+library(tibble)
+library(pheatmap)
+library(patchwork)
+```
+
+### Model Building
+
+```{r}
+# Pairwise stream comparisons within one depth.
+pairwise_permanova <- function(dat, species_cols, permutations = 9999) {
+  groups <- levels(droplevels(dat$stream))
+
+  if (length(groups) < 2) {
+    return(NULL)
+  }
+
+  pairs <- combn(groups, 2, simplify = FALSE)
+
+  results <- lapply(pairs, function(pair) {
+    pair_dat <- dat %>%
+      filter(stream %in% pair) %>%
+      droplevels()
+
+    pair_taxa <- as.matrix(pair_dat[, species_cols, drop = FALSE])
+
+    test <- adonis2(
+      pair_taxa ~ stream,
+      data = pair_dat,
+      method = "bray",
+      permutations = permutations
+    )
+
+    data.frame(
+      comparison = paste(pair, collapse = " vs "),
+      R2 = test$R2[1],
+      F = test$F[1],
+      p = test$`Pr(>F)`[1]
+    )
+  })
+
+  results <- bind_rows(results) %>%
+    mutate(p_adjusted = p.adjust(p, method = "BH")) %>%
+    arrange(p_adjusted)
+
+  results
+}
+
+# PERMANOVA, dispersion test, and pairwise PERMANOVA at each depth.
+depth_levels <- levels(droplevels(bugs$depth))
+
+set.seed(2026)
+
+results_by_depth <- lapply(depth_levels, function(d) {
+  dat <- bugs %>%
+    filter(depth == d) %>%
+    droplevels()
+
+  taxa <- as.matrix(dat[, species_cols, drop = FALSE])
+
+  permanova <- adonis2(
+    taxa ~ stream,
+    data = dat,
+    method = "bray",
+    permutations = 9999
+  )
+
+  dispersion <- betadisper(
+    vegdist(taxa, method = "bray"),
+    group = dat$stream
+  )
+
+  list(
+    permanova = permanova,
+    dispersion = permutest(dispersion, permutations = 9999),
+    pairwise = pairwise_permanova(dat, species_cols)
+  )
+})
+
+names(results_by_depth) <- depth_levels
+
+# View results
+results_by_depth[["surber"]]$permanova
+results_by_depth[["surber"]]$dispersion
+results_by_depth[["surber"]]$pairwise
+
+results_by_depth[["25"]]$permanova
+results_by_depth[["25"]]$dispersion
+results_by_depth[["25"]]$pairwise
+
+results_by_depth[["50"]]$permanova
+results_by_depth[["50"]]$dispersion
+results_by_depth[["50"]]$pairwise
+
+```
+
+significant permanova for all three depths, stream communities are significantly different across streams (temperatures). One significant dispersion test for 25, this means that the statistically significant permanova result could be a reflection of centroid dispersion differences rathe than true stream to stream differences
+
+### P value compairsons - Visualization
+
+#### Data frame building
+```{r}
+pairwise_unique <- pairwise_results %>%
+  separate(
+    comparison,
+    into = c("stream_a", "stream_b"),
+    sep = " vs ",
+    remove = FALSE
+  ) %>%
+  mutate(
+    i = match(stream_a, stream_order),
+    j = match(stream_b, stream_order),
+    stream1 = if_else(i < j, stream_a, stream_b),
+    stream2 = if_else(i < j, stream_b, stream_a)
+  ) %>%
+  filter(!is.na(i), !is.na(j), i != j) %>%
+  group_by(depth, stream1, stream2) %>%
+  summarise(p_adjusted = first(p_adjusted), .groups = "drop")
+
+pairwise_unique %>%
+  count(depth, stream1, stream2) %>%
+  filter(n > 1)
+
+heatmap_data <- pairwise_unique %>%
+  mutate(
+    depth = as.character(depth),
+    stream1 = factor(stream1, levels = stream_order),
+    stream2 = factor(stream2, levels = stream_order),
+    significance = if_else(
+      p_adjusted < 0.05,
+      "Significant",
+      "Not significant"
+    ),
+    label = case_when(
+      p_adjusted < 0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f", p_adjusted)
+    )
+  )
+```
+
+#### Visualizations
+```{r}
+heatmaps_by_depth <- lapply(unique(heatmap_data$depth), function(d) {
+  ggplot(
+    filter(heatmap_data, depth == d),
+    aes(x = stream1, y = stream2, fill = significance)
+  ) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = label), size = 3) +
+    scale_fill_manual(
+      name = "BH-adjusted p",
+      values = c(
+        "Significant" = "#D55E00",
+        "Not significant" = "#D9D9D9"
+      )
+    ) +
+    scale_x_discrete(limits = stream_order) +
+    scale_y_discrete(limits = rev(stream_order)) +
+    coord_equal() +
+    labs(
+      title = paste("Pairwise stream comparisons at depth:", d),
+      x = "Stream",
+      y = "Stream"
+    ) +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+})
+
+names(heatmaps_by_depth) <- unique(heatmap_data$depth)
+
+heatmaps_by_depth[["surber"]]
+heatmaps_by_depth[["25"]]
+heatmaps_by_depth[["50"]]
+```
+### Pairwise comparisons with Bray-Curtis
+
+```{r}
+# Split the pairwise comparison names
+pairwise_p <- pairwise_results %>%
+  separate(
+    comparison,
+    into = c("stream_a", "stream_b"),
+    sep = " vs ",
+    remove = FALSE
+  ) %>%
+  mutate(
+    i = match(stream_a, stream_order),
+    j = match(stream_b, stream_order),
+    stream1 = if_else(i < j, stream_a, stream_b),
+    stream2 = if_else(i < j, stream_b, stream_a)
+  ) %>%
+  select(depth, stream1, stream2, p_adjusted)
+
+# mean between stream Bray-Curtis dissimilarity for every pair
+bray_pairs <- lapply(unique(as.character(bugs$depth)), function(d) {
+  dat <- bugs %>%
+    filter(as.character(depth) == d) %>%
+    droplevels()
+
+  taxa <- as.matrix(dat[, species_cols, drop = FALSE])
+  distances <- as.matrix(vegdist(taxa, method = "bray"))
+
+  stream_pairs <- combn(stream_order, 2, simplify = FALSE)
+
+  bind_rows(lapply(stream_pairs, function(pair) {
+    idx1 <- which(dat$stream == pair[1])
+    idx2 <- which(dat$stream == pair[2])
+
+    # Skip a pair if either stream has no samples at this depth
+    #if (length(idx1) == 0 || length(idx2) == 0) {
+    #  return(NULL)
+    #}
+
+    data.frame(
+      depth = d,
+      stream1 = pair[1],
+      stream2 = pair[2],
+      mean_bray = mean(distances[idx1, idx2, drop = FALSE])
+    )
+  }))
+}) %>%
+  bind_rows()
+
+# Join adjusted p-values and format labels
+heatmap_data <- bray_pairs %>%
+  left_join(pairwise_p, by = c("depth", "stream1", "stream2")) %>%
+  mutate(
+    significance = if_else(
+      !is.na(p_adjusted) & p_adjusted < 0.05,
+      "*",
+      ""
+    ),
+    label = paste0(sprintf("%.2f", mean_bray), significance),
+    stream1 = factor(stream1, levels = stream_order),
+    stream2 = factor(stream2, levels = stream_order)
+  )
+
+# Plot per depth
+depth_labels <- c(
+  "surber" = "Surface (0 cm)",
+  "25" = "25 cm",
+  "50" = "50 cm"
+)
+
+heatmaps_by_depth <- lapply(unique(heatmap_data$depth), function(d) {
+  ggplot(
+    filter(heatmap_data, depth == d),
+    aes(x = stream1, y = stream2, fill = mean_bray)
+  ) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = label), size = 3) +
+    scale_fill_viridis_c(
+      name = "Mean Bray-Curtis Dissimilarity",
+      limits = c(0.4, 0.9)
+    ) +
+    scale_x_discrete(limits = stream_order[-length(stream_order)]) +
+    scale_y_discrete(limits = rev(stream_order[-1])) +
+    coord_equal() +
+    labs(
+      title = depth_labels[[as.character(d)]],
+      x = "Stream",
+      y = "Stream") +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+})
+
+names(heatmaps_by_depth) <- unique(heatmap_data$depth)
+
+heatmaps_by_depth[["surber"]]
+heatmaps_by_depth[["25"]]
+heatmaps_by_depth[["50"]]
+
+combined_heatmap <-
+  patchwork::wrap_plots(
+    c(
+      heatmaps_by_depth[c("surber", "25", "50")],
+      list(patchwork::guide_area())
+    ),
+    ncol = 2,
+    guides = "collect"
+  ) +
+  patchwork::plot_annotation(
+    title = "Stream Comparisons of Bray-Curtis Dissimilarity",
+    subtitle = "* BH-adjusted pairwise PERMANOVA p < 0.05"
+  ) &
+  theme(legend.position = "right")
+
+combined_heatmap
+```
+
+
+
+### Appendix
+
+#### NMDS plot - outdated likely wont run
+
+```{r}
+depth_levels <- levels(droplevels(bugs$depth))
+stream_levels <- levels(droplevels(bugs$stream))
+
+stream_colors <- setNames(
+  grDevices::hcl.colors(length(stream_levels), palette = "Dark 3"),
+  stream_levels
+)
+
+nmds_scores_by_depth <- lapply(depth_levels, function(d) {
+  keep <- !is.na(bugs$depth) & bugs$depth == d
+
+  dat <- droplevels(bugs[keep, , drop = FALSE])
+  sub_comm <- comm[keep, , drop = FALSE]
+
+  usable <- complete.cases(sub_comm) & rowSums(sub_comm) > 0
+  dat <- droplevels(dat[usable, , drop = FALSE])
+  sub_comm <- sub_comm[usable, , drop = FALSE]
+
+  if (nrow(sub_comm) < 3) {
+    return(NULL)
+  }
+
+  set.seed(2026)
+  nmds <- vegan::metaMDS(
+    sub_comm,
+    distance = "bray",
+    k = 2,
+    trymax = 100,
+    autotransform = FALSE,
+    trace = FALSE
+  )
+
+  scores_df <- as.data.frame(vegan::scores(nmds, display = "sites"))
+  scores_df$stream <- dat$stream
+  scores_df$depth <- d
+  scores_df
+}) %>%
+  bind_rows()
+
+nmds_scores_by_depth <- nmds_scores_by_depth %>%
+  group_by(depth, stream) %>%
+  mutate(n_in_group = n()) %>%
+  ungroup() %>%
+  mutate(
+    stream = factor(stream, levels = stream_levels),
+    depth = factor(depth, levels = depth_levels)
+  )
+
+ggplot(
+  nmds_scores_by_depth,
+  aes(x = NMDS1, y = NMDS2, color = stream)
+) +
+  geom_point(size = 3, alpha = 0.85) +
+  #stat_ellipse(
+  #  data = subset(nmds_scores_by_depth, n_in_group >= 3),
+  #  aes(group = stream, color = stream),
+  #  level = 0.95,
+  #  type = "t",
+  #  linewidth = 0.7
+  #) +
+  facet_wrap(~ depth, ncol = length(depth_levels), scales = "fixed") +
+  scale_color_manual(values = stream_colors, drop = FALSE) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "NMDS of community composition by depth",
+    subtitle = "Bray-Curtis dissimilarity",
+    x = "NMDS1",
+    y = "NMDS2",
+    color = "Stream"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+#### Dispersion Summary
+
+```{r}
+disp_summary <- lapply(depth_levels, function(d) {
+  keep <- bugs$depth == d
+  dat <- bugs[keep, , drop = FALSE]
+  sub_comm <- comm[keep, , drop = FALSE]
+
+  sub_comm_hel <- decostand(sub_comm, method = "hellinger") #hellimger transformation
+
+  bd <- betadisper(
+    dist(sub_comm_hel, method = "euclidean"), #eluciean distance method
+    group = dat$stream
+  )
+
+  data.frame(
+    depth = d,
+    stream = names(tapply(bd$distances, dat$stream, mean)),
+    mean_distance = as.numeric(tapply(bd$distances, dat$stream, mean))
+  )
+}) %>%
+  bind_rows()
+
+ggplot(disp_summary, aes(x = stream, y = mean_distance, fill = depth)) +
+  geom_col(position = "dodge", color = "black", linewidth = 0.2) +
+  facet_wrap(~ depth, scales = "free_x") +
+  labs(
+    x = "Stream",
+    y = "Mean distance to centroid",
+    fill = "Depth"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+

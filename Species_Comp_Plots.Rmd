@@ -1,0 +1,298 @@
+---
+title: "Species_Comp_Plots"
+author: "Stellaria Otstot"
+date: "2026-10-25"
+output: html_document
+---
+
+Purpose: Species composition plots
+- create average sample abundance bar chart
+- create abundance and relative abundance heat maps
+
+Necessary Environment Objects
+- bugs: ISP main markdown
+
+Environment Objects Created
+- bugs_long
+- bugs_long_prop
+
+### Set Up
+```{r}
+library(tidyr)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+```
+
+### Data frame building
+
+#### bugs_long
+```{r}
+bugs_long <- bugs %>%
+  #filter(!(depth == "surber")) %>%
+  pivot_longer(
+    cols = -c(stream, depth, station, season, year, tempDepth, doDepth, conductivityDepth, pHDepth, sample_id),
+    names_to = "taxon",
+    values_to = "count"
+  ) %>%
+  group_by(stream, depth, taxon) %>% #could go further and break down by year and season...
+  summarise(total_count = sum(count, na.rm = TRUE), .groups = "drop")
+
+bugs_long %>%
+  ggplot(aes(x = stream, y = total_count, fill = taxon)) +
+  geom_col() +
+  facet_wrap(~ depth, ncol = 1) +
+  labs(
+    x = "Stream",
+    y = "Total abundance",
+    fill = "Taxon"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+```
+
+#### bugs_long_prop
+```{r}
+bugs_long_prop <- bugs_long %>%
+  group_by(stream, depth) %>%
+  mutate(prop = total_count / sum(total_count)) %>%
+  ungroup()
+
+taxon_order <- bugs_long_prop %>%
+  group_by(taxon) %>%
+  summarise(mean_prop = mean(prop, na.rm = TRUE), .groups = "drop") %>%
+  arrange(mean_prop) %>%
+  pull(taxon)
+
+bugs_long_prop <- bugs_long_prop %>%
+  mutate(
+    taxon = factor(taxon, levels = taxon_order),
+    stream = factor(
+      stream,
+      levels = c("is-11", "is-10", "is-7", "is-1", "is-5", "is-6", "is-8")
+    )
+  )
+
+ggplot(bugs_long_prop, aes(x = stream, y = prop, fill = taxon)) +
+  geom_col() +
+  facet_wrap(~ depth) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    x = "Stream",
+    y = "Relative abundance",
+    fill = "Taxon"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+### Visualizations
+
+#### Average Sample Abundance
+```{r}
+bugs %>%
+  mutate(
+    sample_abundance = rowSums(
+      as.data.frame(across(all_of(species_cols))),
+      na.rm = TRUE
+    )
+  ) %>%
+  group_by(stream, depth) %>%
+  summarise(
+    total_abundance = sum(sample_abundance, na.rm = TRUE),
+    n_samples = n(),
+    mean_sample_abundance = total_abundance / n_samples,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    stream = factor(
+      stream,
+      levels = c("is-11", "is-10", "is-7", "is-1", "is-5", "is-6", "is-8")
+    ),
+    depth = factor(depth, levels = c("surber", "25", "50"))
+  ) %>%
+  ggplot(aes(x = stream, y = mean_sample_abundance, fill = depth)) +
+  geom_col(position = "dodge") +
+  theme_minimal() +
+  labs(
+    y = "Average abundance per sample",
+    x = "Stream",
+    title = "Average Sample Abundance per Stream and Depth"
+  ) +
+  scale_fill_discrete(
+    name = "Depth",
+    labels = c(
+      "25" = "25 cm",
+      "50" = "50 cm",
+      "surber" = "Surface (0 cm)"
+    )
+  )
+```
+
+#### Heatmap of Relative Abundances (proportions)
+```{r}
+# 25cm
+dat25 <- bugs_long_prop %>%
+  filter(depth == "25")
+
+p25 <- ggplot(dat25, aes(x = stream, y = taxon)) +
+  geom_tile(
+    data = filter(dat25, prop == 0),
+    fill = "lightgrey",
+    color = "white"
+  ) +
+  geom_tile(
+    data = filter(dat25, prop > 0),
+    aes(fill = prop),
+    color = "white"
+  ) +
+  facet_wrap(~ depth, ncol = 1) +
+  scale_fill_viridis_c(
+    option = "magma",
+    limits = c(0,1),
+    labels = scales::percent,
+    direction = -1,
+    name = "Proportion"
+  ) +
+  labs(
+    x = "Stream",
+    y = "Taxon",
+    title = "Proportional Abundance of Taxa at 25cm"
+  ) +
+  theme_minimal()
+
+# 50cm
+dat50 <- bugs_long_prop %>%
+  filter(depth == "50")
+
+p50 <- ggplot(dat50, aes(x = stream, y = taxon)) +
+  geom_tile(
+    data = filter(dat50, prop == 0),
+    fill = "lightgrey",
+    color = "white"
+  ) +
+  geom_tile(
+    data = filter(dat50, prop > 0),
+    aes(fill = prop),
+    color = "white"
+  ) +
+  facet_wrap(~ depth, ncol = 1) +
+  scale_fill_viridis_c(
+    option = "magma",
+    limits = c(0,1),
+    labels = scales::percent,
+    direction = -1,
+    name = "Proportion"
+  ) +
+  labs(
+    x = "Stream",
+    y = "Taxon",
+    title = "Proportional Abundance of Taxa at 50cm"
+  ) +
+  theme_minimal()
+
+# Surface
+datsurber <- bugs_long_prop %>%
+  filter(depth == "surber")
+
+p_surber <- ggplot(datsurber, aes(x = stream, y = taxon)) +
+  geom_tile(
+    data = filter(datsurber, prop == 0),
+    fill = "lightgrey",
+    color = "white"
+  ) +
+  geom_tile(
+    data = filter(datsurber, prop > 0),
+    aes(fill = prop),
+    color = "white"
+  ) +
+  facet_wrap(~ depth, ncol = 1) +
+  scale_fill_viridis_c(
+    option = "magma",
+    limits = c(0,1),
+    labels = scales::percent,
+    direction = -1,
+    name = "Proportion"
+  ) +
+  labs(
+    x = "Stream",
+    y = "Taxon",
+    title = "Proportional Abundance of Taxa at Surface of Benthic Layer"
+  ) +
+  theme_minimal()
+
+(p25 | p50) /
+  (p_surber | guide_area()) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+p25
+p50
+p_surber
+```
+
+### Heatmap of Total Abundances
+```{r}
+# 25 cm depth
+bugs_long %>%
+  filter(depth == "25") %>%
+  ggplot(aes(x = stream, y = taxon, fill = total_count)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  scale_fill_viridis_c(option = "viridis", name = "Count") +  #limits= c(0, 400)
+  labs(
+    x = "Stream",
+    y = "Taxon",
+    fill = "Abundance",
+    title = "Total Abundance of Taxa at 25cm"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(size = 10)
+  )
+
+# 50 cm depth
+bugs_long %>%
+  filter(depth == "50") %>%
+  ggplot(aes(x = stream, y = taxon, fill = total_count)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  scale_fill_viridis_c(option = "viridis", name = "Count") +
+  labs(
+    x = "Stream",
+    y = "Taxon",
+    fill = "Abundance",
+    title = "Total Abundance of Taxa at 50cm"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(size = 10)
+  )
+
+# surface
+bugs_long %>%
+  filter(depth == "surber") %>%
+  ggplot(aes(x = stream, y = taxon, fill = total_count)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  scale_fill_viridis_c(option = "viridis", name = "Count") +
+  labs(
+    x = "Stream",
+    y = "Taxon",
+    fill = "Abundance",
+    title = "Total Abundance of Taxa at Surface of Benthic Layer"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(size = 10)
+  )
+```

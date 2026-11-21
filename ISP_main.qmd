@@ -2,7 +2,20 @@
 title: "ISP_main_QMD"
 format: html
 editor: visual
+author: Stellaria Otstot
 ---
+
+Purpose: Home base for ISP data analysis
+- Read in data and make preliminary edits
+- Preliminary visualizations
+- Data processing tracking
+
+Environment Objects Created
+- bugs_raw
+- bugs
+- env_raw
+- env
+- na_summary
 
 ### Set Up
 
@@ -15,22 +28,99 @@ library(ggplot2)
 library(vegan)
 ```
 
-```{r}
-### read in data
 
+#### Env/Other
+```{r}
 #dropbox file path set up
 dropbox_path <- path_home("Dropbox", "Stella", "data") 
 
 # chemicals
 chemicals <- read.csv(dropbox_path/"catch.csv") 
 
-# bugs
-Hengill <- read_excel(dropbox_path/"Hengill Fall 2013.xlsx")
+# Environmental stream data
+env_raw <- read_xlsx(dropbox_path/"environ_vars.xlsx") 
+
+env <- env_raw%>%
+  group_by(stream, station, depth) %>%
+  summarize(tempDepth = mean(`°C`, na.rm = TRUE),
+            doDepth = mean(`DO%`, na.rm = TRUE),
+            conductivityDepth = mean(`µS`, na.rm = TRUE),
+            pHDepth = mean(`pH`, na.rm = TRUE)) %>%
+  ungroup()
+
+sdtemp <- env_raw %>%
+  group_by(stream, depth) %>%
+  summarize(tempDepth = mean(`°C`, na.rm = TRUE),
+  sd_temp = sd(`°C`, na.rm = TRUE)) %>%
+  ungroup()
+
+sdtemp %>%
+  summarise(mean = mean(sd_temp))
+```
+
+#### Bugs
+```{r}
+bugs_raw <- read.csv(dropbox_path/"inverts_NewDat_10.11.26.csv") %>% 
+  
+  #JOIN ENV DATA
+  left_join(env, by = c("stream", "station", "depth")) %>%
+  filter(season == "fall" ) %>%
+  
+  #RENAME TAXA
+  rename(
+    orthocladinae = orthoclad,
+    oligochaeta = oligochaet,
+    copepoda = copepod,
+    acarina = acari,
+    ostracoda = ostracod,
+    tanytarsini = tanytars,
+    gastropoda = gastropod,
+    simuliidae = simuliid,
+    empididae = empidid,
+    tanypodinae = tanypod,
+    ceratopogonidae = ceratopo,
+    tipulidae = tipulid,
+    amphipoda = amphipod,
+    limoniidae = limoniid,
+    insertname = crickety_thing) %>%
+  
+  #SET FACTOR AND LEVELS
+  mutate(
+    depth = factor(depth, levels = c("surber", "25", "50")),
+    stream = factor(stream, levels = c("is-11", "is-10", "is-7", "is-1", "is-5", "is-6", "is-8")),
+    year = factor(year),
+    station = factor(station),
+    tempDepth = as.numeric(tempDepth),
+    doDepth = as.numeric(doDepth),
+    conductivityDepth = as.numeric(conductivityDepth),
+    pHDepth = as.numeric(pHDepth)
+  ) %>%
+  
+  #REMOVE ABSENT TAXA
+  select(where(~ !all(is.na(.x)))) %>%
+  select(-insertname) %>%
+  
+  #REMOVE 1 Outlier
+  filter(!(stream == "is-1" & station == "1" & season == "fall" & year == "2013" & depth == "surber"))
 
 
-bugs <- read.csv2(dropbox_path/"inverts.csv") %>%
-  mutate(year = as.factor(year),
-         stream = as.factor(stream))
+# ID COLS/META DATA
+id_cols <- c("stream", "depth", "station", "season", "year", "tempDepth", "doDepth", "conductivityDepth", "pHDepth")
+species_cols <- setdiff(names(bugs_raw), id_cols)
+
+bugs <- bugs_raw %>%
+  mutate(sample_id = paste(stream, depth, sep = "_")) %>%
+  mutate(across(all_of(species_cols), ~ as.numeric(as.character(.x)))) %>%
+  filter(rowSums(across(all_of(species_cols)), na.rm = TRUE) > 0) %>%
+  mutate(across(all_of(species_cols), ~ coalesce(.x, 0)))
+
+
+# Check how many processed samples each stream contributes at each depth.
+sample_counts <- bugs %>%
+  count(depth, stream, name = "n_samples") %>%
+  arrange(depth, stream)
+
+sample_counts
 ```
 
 # Data Cleaning
@@ -39,8 +129,9 @@ chemicals_clean <- chemicals %>%
   filter(Stream %in% c("is1", "is2", "is3", "is4", "is5", "is6", "is7"))
 ```
 
-# Preliminary Analysis
+### Preliminary Analysis Visuals
 ```{r}
+#chemicals
 chemicals_clean %>%
   group_by(Stream, Depth) %>%
   summarise(mean_SRP = mean(SRP))
@@ -48,6 +139,91 @@ chemicals_clean %>%
 chemicals_clean %>%
   ggplot(aes(y = SRP, x = Stream, color = Depth)) +
   geom_boxplot()
+
+# Stream Temps
+stream_order <- env_raw %>%
+  group_by(stream) %>%
+  summarise(mean_temp = mean(`°C`, na.rm = TRUE)) %>%
+  arrange(mean_temp) %>%
+  pull(stream)
+
+env_raw %>%
+  mutate(stream = factor(stream, levels = stream_order),
+         depth = factor(depth, levels = c("surber", "25", "50"))) %>%
+  ggplot(aes(x = stream, y = `°C`, color = depth)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    x = "Stream",
+    y = "Water Temperature (°C)",
+    title = "Temperature at Surface, 25 cm, and 50 cm Depths Across Streams"
+  ) +
+  scale_color_discrete(
+    name = "Depth",
+    labels = c("25" = "25 cm", "50" = "50 cm", "surber" = "Surface (0 cm)")
+  )
 ```
 
-goal: data frame with site, species 1, species 2, species 3, etc. temp, disolved O, etc
+### Preliminary Analysis Relationships between env vars
+```{r}
+#Temp vs pH
+env_raw %>%
+  ggplot(aes(y = pH, x = `°C`, color = depth)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+tempphmod <- lm(pH ~ `°C`, data = env_raw)
+summary(tempphmod)
+
+#Temp vs DA
+env_raw %>%
+  ggplot(aes(y = `DO%`, x = `°C`, color = depth)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+tempphmod <- lm(pH ~ `DO%`*depth, data = env_raw)
+summary(tempphmod)
+
+#Temp vs conductivity
+env_raw %>%
+  ggplot(aes(y = pH, x = `µS`, color = depth)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+tempphmod <- lm(pH ~ `µS`*depth, data = env_raw)
+summary(tempphmod)
+```
+
+### Missing
+```{r}
+meta_cols <- c("stream", "depth", "station", "season", "year", "tempDepth", "doDepth", "conductivityDepth", "pHDepth")
+taxa_cols <- setdiff(names(bugs_raw), meta_cols)
+
+na_summary <- bugs_raw %>%
+  group_by(stream, depth, station, season, year) %>%
+  summarise(
+    all_taxa_na = all(is.na(across(all_of(taxa_cols)))),
+    na_count = sum(is.na(across(all_of(taxa_cols)))),
+    .groups = "drop"
+  )
+
+ggplot(na_summary, aes(x = stream, y = factor(station), fill = all_taxa_na)) +
+  geom_tile(color = "white") +
+  facet_grid(depth ~ year + season) +
+  scale_fill_manual(
+    values = c("FALSE" = "grey80", "TRUE" = "firebrick"),
+    labels = c("Complete", "Missing")
+  ) +
+  labs(
+    x = "Stream",
+    y = "Station",
+    fill = "Sample Status",
+    title = "Coverage of Samples Used for Analysis"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+    axis.text.y = element_text(size = 8)
+  )
+```
+
