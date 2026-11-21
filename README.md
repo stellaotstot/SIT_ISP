@@ -1,5 +1,17 @@
-# SIT_ISP
-Repository for R code used for ISP project for SIT Undergraduate Climate Change and the Arctic Fall 2026. 
+## SIT_ISP.Rprog - Repository for R code used for ISP project for SIT Undergraduate Climate Change and the Arctic Fall 2026. 
+
+# ISP_Main Main Markdown
+Purpose: Home base for ISP data analysis
+- Read in data and make preliminary edits
+- Preliminary visualizations
+- Data processing tracking
+
+Environment Objects Created
+- bugs_raw
+- bugs
+- env_raw
+- env
+- na_summary
 
 # Markdowns
 
